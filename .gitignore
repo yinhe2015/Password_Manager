@@ -32,6 +32,6 @@ dist/
 build/
 *.egg-info/
 
-# 密码忘记
+# 密码文件
 密码.pkl
 密码哈希.dat
