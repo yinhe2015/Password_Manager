@@ -1,2 +1,2 @@
-pycryptodome
-PySide6
+pycryptodome>=4.1.1
+PySide6>=6.5.2
