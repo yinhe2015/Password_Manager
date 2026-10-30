@@ -5,6 +5,8 @@ from os.path import exists as _路径存在
 from Crypto.Cipher import AES as _AES算法
 from Crypto.Util.Padding import pad as _填充, unpad as _解填充
 
+from 密码校验 import 生成密码校验 as _生成密码校验, 验证密码校验 as _验证密码校验
+
 def _aes加密(密码哈希: bytes, 明文: str) -> bytes:
     数据字节 = 明文.encode('utf-8')
     加密器 = _AES算法.new(密码哈希, _AES算法.MODE_CBC)
@@ -47,9 +49,9 @@ def 修改主密码(密码文件路径: str, 旧密码字节: bytes, 新密码�
     if _路径存在(密码哈希文件路径):
     
         with open(密码哈希文件路径, 'rb') as f:
-            旧密码哈希 = f.read()
+            密码校验数据 = f.read()
         
-        if _SHA256(旧密码字节).digest() != 旧密码哈希:
+        if not _验证密码校验(旧密码哈希, 密码校验数据):
             raise ValueError("旧密码验证失败，请输入正确的旧密码")
     else:
         print('密码哈希文件不存在, 取消验证')
@@ -61,6 +63,7 @@ def 修改主密码(密码文件路径: str, 旧密码字节: bytes, 新密码�
     # 4. 生成新旧密码的哈希
     
     新密码哈希 = _SHA256(新密码字节).digest()
+    新密码校验数据 = _生成密码校验(新密码哈希)
     
     # 5. 遍历数据，解密后重新加密
     新数据 = {}
@@ -81,7 +84,7 @@ def 修改主密码(密码文件路径: str, 旧密码字节: bytes, 新密码�
     
     # 7. 更新密码哈希文件
     with open(密码哈希文件路径, 'wb') as f:
-        f.write(_SHA256(新密码哈希).digest())
+        f.write(新密码校验数据)
     
     print(f"主密码修改成功！共更新 {len(新数据)} 条密码记录")
     return True

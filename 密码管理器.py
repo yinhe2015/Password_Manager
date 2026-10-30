@@ -5,6 +5,8 @@ from os.path import exists as _路径存在
 from Crypto.Cipher import AES as _AES算法
 from Crypto.Util.Padding import pad as _填充, unpad as _解填充
 
+from 密码校验 import 生成密码校验 as _生成密码校验, 验证密码校验 as _验证密码校验
+
 class 加解密工具:
     def __init__(self, 密码字节: bytes):
         self.密码 = _SHA256(密码字节).digest()
@@ -13,17 +15,15 @@ class 加解密工具:
     def _检查密码(self) -> None:
         密码哈希文件路径 = '密码哈希.dat'
 
-        密码_SHA256 = _SHA256(self.密码).digest()
-
         if _路径存在(密码哈希文件路径):
             with open(密码哈希文件路径, 'rb') as 文件:
                 密码哈希 = 文件.read()
-            if 密码_SHA256 != 密码哈希:
+            if not _验证密码校验(self.密码, 密码哈希):
                 raise ValueError('密码与密码哈希不匹配')
         else:
             print('警告: 密码哈希文件不存在, 将创建新文件')
             with open(密码哈希文件路径, 'wb') as 文件:
-                文件.write(密码_SHA256)
+                文件.write(_生成密码校验(self.密码))
 
     def 加密(self, 数据: str) -> bytes:
         数据字节 = 数据.encode('utf-8')
