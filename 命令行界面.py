@@ -2,7 +2,8 @@ from os import chdir as _切换目录
 from os.path import dirname as _获取上级目录
 _切换目录(_获取上级目录(__file__))
 
-from 密码管理器 import 密码管理器
+from getpass import getpass
+from 密码管理器 import 密码管理器, 默认密码文件
 
 class 命令行用户界面:
     空格 = ' '
@@ -26,7 +27,7 @@ class 命令行用户界面:
     def __init__(self):
         print('欢迎使用 Python 密码管理器 作者: 张因和')
 
-        解密密码 = input('请输入解密密码: ')
+        解密密码 = getpass('请输入解密密码: ')
         if 解密密码 in ['取消','cancel','exit','quit','q']:
             print('取消')
             return
@@ -34,7 +35,7 @@ class 命令行用户界面:
         解密密码字节 = 解密密码.encode('utf-8')
 
         try:
-            self.密码本 = 密码管理器('./密码.pkl', 解密密码字节)
+            self.密码本 = 密码管理器(默认密码文件, 解密密码字节)
         except Exception as 错误:
             if str(错误) == '密码与密码哈希不匹配':
                 print('密码错误')
@@ -74,6 +75,7 @@ class 命令行用户界面:
                     命令函数 = 函数
                     break
             if 命令函数 == '退出':
+                self.密码本.锁定()
                 break
             if 命令函数 is None:
                 print(f'未知的命令: {命令}')

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QDialog, QTextEdit, QGroupBox,QFormLayout, QHeaderView
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QDialog, QTextEdit, QGroupBox,QFormLayout, QHeaderView, QInputDialog
+from PySide6.QtCore import Qt, Signal, QTimer, QObject, QEvent
 from PySide6.QtGui import QFont
 import sys
 import os
@@ -10,7 +10,7 @@ import os
 # 切换到当前目录
 os.chdir(os.path.dirname(__file__))
 
-from 密码管理器 import 密码管理器
+from 密码管理器 import 密码管理器, 默认密码文件
 
 class AddPasswordDialog(QDialog):
     def __init__(self, password_manager, parent=None):
@@ -59,7 +59,7 @@ class AddPasswordDialog(QDialog):
 
     def add_password(self):
         name = self.name_input.text().strip()
-        password = self.password_input.text().strip()
+        password = self.password_input.text()
         username = self.username_input.text().strip() or None
         notes = self.notes_input.toPlainText().strip() or None
 
@@ -178,7 +178,14 @@ class ViewPasswordDialog(QDialog):
         if password:
             clipboard = QApplication.clipboard()
             clipboard.setText(password)
+            QTimer.singleShot(30_000, lambda: self.clear_copied_password(clipboard, password))
             QMessageBox.information(self, '成功', '密码已复制到剪贴板')
+
+    @staticmethod
+    def clear_copied_password(clipboard, password):
+        # 不清除用户随后复制的其他内容。
+        if clipboard.text() == password:
+            clipboard.clear()
 
     def toggle_password_visibility(self):
         '''切换密码显示/隐藏状态'''
@@ -198,7 +205,7 @@ class ViewPasswordDialog(QDialog):
             return
 
         new_name = self.name_input.text().strip()
-        new_password = self.password_input.text().strip()
+        new_password = self.password_input.text()
         new_username = self.username_input.text().strip() or None
         new_notes = self.notes_input.toPlainText().strip() or None
 
@@ -407,6 +414,9 @@ class LoginWindow(QWidget):
         button_layout = QHBoxLayout()
         self.login_button = QPushButton('登录')
         self.login_button.clicked.connect(self.verify_password)
+        self.create_button = QPushButton('新建密码库')
+        self.create_button.clicked.connect(self.create_vault)
+        button_layout.addWidget(self.create_button)
         self.exit_button = QPushButton('退出')
         self.exit_button.clicked.connect(QApplication.quit)
 
@@ -422,22 +432,76 @@ class LoginWindow(QWidget):
         return super().keyPressEvent(event)
 
     def verify_password(self):
-        password = self.password_input.text().strip()
+        password = self.password_input.text()
         if not password:
             QMessageBox.warning(self, '错误', '请输入密码')
             return
 
         password_bytes = password.encode('utf-8')
         try:
-            password_manager_instance = 密码管理器('./密码.pkl', password_bytes)
+            password_manager_instance = 密码管理器(默认密码文件, password_bytes)
+            self.password_input.clear()
             self.login_success.emit(password_manager_instance)
             self.close()
         except Exception as e:
-            if str(e) == '密码与密码哈希不匹配':
-                QMessageBox.warning(self, '错误', '密码错误')
-                return
-            import traceback
-            QMessageBox.critical(self, '加载失败', f'加载密码失败: {traceback.format_exc()}')
+            self.password_input.clear()
+            QMessageBox.warning(self, '无法打开密码库', str(e))
+
+    def create_vault(self):
+        if any(os.path.exists(p) for p in (默认密码文件, '密码.pkl', '密码哈希.dat')):
+            QMessageBox.warning(self, '无法创建', '已有密码库或旧数据；请登录，旧格式请先运行迁移旧数据.py。')
+            return
+        password = self.password_input.text()
+        if not password:
+            QMessageBox.warning(self, '无法创建', '请先在密码框填写新主密码')
+            return
+        confirmation, ok = QInputDialog.getText(self, '确认主密码', '再次输入主密码:', QLineEdit.EchoMode.Password)
+        if not ok:
+            return
+        if confirmation != password:
+            QMessageBox.warning(self, '无法创建', '两次主密码不一致')
+            return
+        try:
+            manager = 密码管理器(默认密码文件, password.encode('utf-8'), 创建=True)
+            self.password_input.clear()
+            self.login_success.emit(manager)
+            self.close()
+        except Exception as e:
+            QMessageBox.warning(self, '无法创建', str(e))
+
+
+class IdleLock(QObject):
+    """五分钟无键鼠操作后关闭程序；下次打开必须重新验证主密码。"""
+    def __init__(self, app, manager):
+        super().__init__(app)
+        self.app = app
+        self.manager = manager
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.lock)
+        app.installEventFilter(self)
+        app.aboutToQuit.connect(self.clear_secrets)
+        self.timer.start(5 * 60_000)
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress,
+                            QEvent.Type.MouseMove, QEvent.Type.Wheel):
+            self.timer.start(5 * 60_000)
+        return False
+
+    def clear_secrets(self):
+        self.manager.锁定()
+        self.app.clipboard().clear()
+        for widget in self.app.allWidgets():
+            if isinstance(widget, (QLineEdit, QTextEdit)):
+                widget.blockSignals(True)
+                widget.clear()
+            if isinstance(widget, ViewPasswordDialog):
+                widget.original_data.clear()
+
+    def lock(self):
+        self.clear_secrets()
+        self.app.quit()
 
 def main():
     app = QApplication(sys.argv)
@@ -458,6 +522,7 @@ def main():
         nonlocal main_window
         main_window = PasswordManagerUI(password_manager_instance)
         main_window.show()
+        app.idle_lock = IdleLock(app, password_manager_instance)
 
     login_window.login_success.connect(open_main_window)
     login_window.show()
