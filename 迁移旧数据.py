@@ -12,8 +12,37 @@ import tempfile
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from 密码校验 import 验证密码校验
-from 密码管理器 import 密码管理器, 默认密码文件, _读取文件, _原子写入, _检查数据
+"""主密码校验格式：版本标识 + 32 字节随机盐 + SHA256(盐 + AES 密钥)。"""
+
+from hashlib import sha256 as _SHA256
+from hmac import compare_digest as _安全比较
+from secrets import token_bytes as _随机字节
+
+
+_格式标识 = b'PMHASH\x01'
+_盐长度 = 32
+_哈希长度 = 32
+
+
+def 生成密码校验(加密密钥: bytes) -> bytes:
+    """接收 SHA256(主密码) 得到的 AES 密钥，生成带盐校验数据。"""
+    盐 = _随机字节(_盐长度)
+    校验值 = _SHA256(盐 + 加密密钥).digest()
+    return _格式标识 + 盐 + 校验值
+
+
+def 验证密码校验(加密密钥: bytes, 校验数据: bytes) -> bool:
+    """按文件中保存的盐验证密钥；拒绝旧格式或损坏的校验数据。"""
+    if (len(校验数据) != len(_格式标识) + _盐长度 + _哈希长度
+            or not 校验数据.startswith(_格式标识)):
+        raise ValueError('密码哈希文件格式无效')
+    盐起点 = len(_格式标识)
+    盐终点 = 盐起点 + _盐长度
+    盐 = 校验数据[盐起点:盐终点]
+    校验值 = _SHA256(盐 + 加密密钥).digest()
+    return _安全比较(校验值, 校验数据[盐终点:])
+
+from 密码管理器 import 密码管理器, 密码文件, _读取文件, _原子写入, _检查数据
 
 
 class _受限读取器(pickle.Unpickler):
@@ -53,7 +82,7 @@ def 读取旧数据(旧文件, 校验文件, 主密码):
 def 迁移旧数据(目录, 主密码):
     目录 = Path(目录).resolve()
     旧文件, 校验文件 = 目录 / '密码.pkl', 目录 / '密码哈希.dat'
-    新文件 = 目录 / 默认密码文件
+    新文件 = 目录 / 密码文件
     if 新文件.exists():
         raise FileExistsError('新密码库已存在，拒绝重复迁移或覆盖')
     原文件内容 = {文件: _读取文件(文件) for 文件 in (旧文件, 校验文件)}
@@ -64,10 +93,11 @@ def 迁移旧数据(目录, 主密码):
         _原子写入(备份目录 / 文件.name, 原文件内容[文件], 仅新建=True)
     # 在私有临时目录中生成并核对，失败不会留下半成品目标库。
     with tempfile.TemporaryDirectory(prefix='.迁移-', dir=目录) as 临时目录:
-        暂存 = Path(临时目录) / 默认密码文件
-        管理器 = 密码管理器(str(暂存), 主密码, 创建=True)
+        暂存 = Path(临时目录) / 密码文件
+        管理器 = 密码管理器(str(暂存), 主密码)
         try:
             管理器._保存(数据)
+            管理器.锁定()
             核对 = 密码管理器(str(暂存), 主密码)
             try:
                 if 核对.密码数据 != 数据:

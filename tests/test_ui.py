@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QInputDialog, QPushButton
 from 图形 import LoginWindow, PasswordManagerUI, ViewPasswordDialog, IdleLock
-from 密码管理器 import 密码管理器, 默认密码文件
+from 密码管理器 import 密码管理器, 密码文件
 
 
 class InterfaceTests(unittest.TestCase):
@@ -20,13 +20,16 @@ class InterfaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 os.chdir(tmp)
-                manager = 密码管理器(默认密码文件, b' test master ', 创建=True)
+                manager = 密码管理器(密码文件, b' test master ')
                 manager.添加('demo', ' saved password ', 'user', 'notes')
+                manager.锁定()
                 login = LoginWindow()
                 received = []
                 login.login_success.connect(received.append)
                 login.password_input.setText(' test master ')
-                login.verify_password()
+                with patch.object(QInputDialog, 'getText') as confirmation:
+                    login.verify_password()
+                confirmation.assert_not_called()
                 self.assertEqual(len(received), 1)
                 self.assertEqual(login.password_input.text(), '')
                 window = PasswordManagerUI(received[0])
@@ -58,17 +61,32 @@ class InterfaceTests(unittest.TestCase):
             finally:
                 os.chdir(before)
 
-    def test_missing_vault_login_never_creates_one(self):
+    def test_missing_vault_requires_matching_confirmation(self):
         before = Path.cwd()
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 os.chdir(tmp)
                 login = LoginWindow()
-                login.password_input.setText('some master')
-                with patch.object(QMessageBox, 'warning') as warning:
+                received = []
+                login.login_success.connect(received.append)
+                self.assertNotIn('新建密码库', [b.text() for b in login.findChildren(QPushButton)])
+                login.password_input.setText(' some master ')
+                for confirmation, ok in [('different', True), (' some master ', False)]:
+                    with self.subTest(confirmation=confirmation, ok=ok):
+                        with patch.object(QInputDialog, 'getText', return_value=(confirmation, ok)), \
+                                patch.object(QMessageBox, 'warning'):
+                            login.verify_password()
+                        self.assertFalse(Path(密码文件).exists())
+                        self.assertEqual(received, [])
+                with patch.object(QInputDialog, 'getText', return_value=(' some master ', True)):
                     login.verify_password()
-                warning.assert_called_once()
-                self.assertFalse(Path(默认密码文件).exists())
+                self.assertTrue(Path(密码文件).exists())
+                self.assertEqual(len(received), 1)
+                self.assertEqual(login.password_input.text(), '')
+                received[0].锁定()
+                reopened = 密码管理器(密码文件, b' some master ')
+                self.assertEqual(reopened.获取数量(), 0)
+                reopened.锁定()
                 login.deleteLater()
                 self.app.processEvents()
             finally:

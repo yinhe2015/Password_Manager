@@ -11,10 +11,9 @@ from unittest.mock import patch
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-from 密码管理器 import 密码管理器, 默认密码文件
-from 密码校验 import 生成密码校验
+from 密码管理器 import 密码管理器, 密码文件
 from 修改密码 import 修改主密码
-from 迁移旧数据 import 迁移旧数据
+from 迁移旧数据 import 迁移旧数据, 生成密码校验
 
 MASTER = b'test-only-master'
 
@@ -29,11 +28,12 @@ class SecurityTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.path = self.root / 默认密码文件
+        self.path = self.root / 密码文件
 
     def create(self):
-        manager = 密码管理器(str(self.path), MASTER, 创建=True)
+        manager = 密码管理器(str(self.path), MASTER)
         manager.添加('private-service', ' saved password ', 'private-user', 'private-note')
+        self.addCleanup(manager.锁定)
         return manager
 
     def legacy(self, malicious=False):
@@ -55,6 +55,7 @@ class SecurityTests(unittest.TestCase):
         manager.修改用户名('renamed', None)
         manager.修改备注('renamed', 'changed')
         manager.移除('other')
+        manager.锁定()
         reopened = 密码管理器(str(self.path), MASTER)
         self.assertEqual(list(reopened.读取所有()), [('renamed', ' new password ', None, 'changed')])
         self.assertNotIn(b'renamed', self.path.read_bytes())
@@ -62,19 +63,27 @@ class SecurityTests(unittest.TestCase):
         if os.name == 'posix':
             self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
-    def test_wrong_password_and_missing_vault_do_not_write(self):
-        self.create()
+    def test_wrong_password_does_not_write(self):
+        self.create().锁定()
         before = self.path.read_bytes()
         with self.assertRaises(ValueError):
             密码管理器(str(self.path), b'wrong')
         self.assertEqual(self.path.read_bytes(), before)
-        self.path.unlink()
-        with self.assertRaises(FileNotFoundError):
-            密码管理器(str(self.path), MASTER)
+
+    def test_missing_vault_automatically_created(self):
+        manager = 密码管理器(str(self.path), MASTER)
+        self.assertTrue(self.path.exists())
+        self.assertEqual(manager.获取数量(), 0)
+        manager.锁定()
+        self.assertEqual(密码管理器(str(self.path), MASTER).获取数量(), 0)
+
+    def test_empty_password_does_not_create_vault(self):
+        with self.assertRaises(ValueError):
+            密码管理器(str(self.path), b'')
         self.assertFalse(self.path.exists())
 
     def test_tampering_rejected(self):
-        self.create()
+        self.create().锁定()
         original = self.path.read_bytes()
         for field in ('nonce', 'ciphertext', 'tag'):
             envelope = json.loads(original)
@@ -98,10 +107,11 @@ class SecurityTests(unittest.TestCase):
                 manager.修改密码('private-service', 'lost')
         self.assertEqual(self.path.read_bytes(), original)
         self.assertEqual(manager.获取密码('private-service'), ' saved password ')
-        self.assertEqual(list(self.root.iterdir()), [self.path])
+        self.assertEqual(set(self.root.iterdir()), {self.path, self.path.with_suffix(".lock")})
 
     def test_password_rotation_and_lock(self):
         manager = self.create()
+        manager.锁定()
         with self.assertRaises(ValueError):
             修改主密码(str(self.path), b'wrong', b'new-master')
         修改主密码(str(self.path), MASTER, b'new-master')

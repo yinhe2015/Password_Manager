@@ -1,9 +1,9 @@
 from os import chdir as _切换目录
-from os.path import dirname as _获取上级目录
+from os.path import dirname as _获取上级目录, exists as _路径存在
 _切换目录(_获取上级目录(__file__))
 
 from getpass import getpass
-from 密码管理器 import 密码管理器, 默认密码文件
+from 密码管理器 import 密码管理器, 密码文件
 
 class 命令行用户界面:
     空格 = ' '
@@ -32,10 +32,19 @@ class 命令行用户界面:
             print('取消')
             return
 
+        if not 解密密码:
+            print('主密码不能为空')
+            return
+        if not _路径存在(密码文件):
+            确认密码 = getpass('密码库不存在，请再次输入主密码: ')
+            if 确认密码 != 解密密码:
+                print('两次主密码不一致')
+                return
+
         解密密码字节 = 解密密码.encode('utf-8')
 
         try:
-            self.密码本 = 密码管理器(默认密码文件, 解密密码字节)
+            self.密码本 = 密码管理器(密码文件, 解密密码字节)
         except Exception as 错误:
             if str(错误) == '密码与密码哈希不匹配':
                 print('密码错误')
@@ -44,9 +53,11 @@ class 命令行用户界面:
             print(f'加载密码失败: {_格式化异常()}')
             return
 
-        self.初始化命令()
-
-        self.运行()
+        try:
+            self.初始化命令()
+            self.运行()
+        finally:
+            self.密码本.锁定()
 
     def 初始化命令(self):
         self.命令列表 = []

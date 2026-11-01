@@ -10,7 +10,7 @@ import os
 # 切换到当前目录
 os.chdir(os.path.dirname(__file__))
 
-from 密码管理器 import 密码管理器, 默认密码文件
+from 密码管理器 import 密码管理器, 密码文件
 
 class AddPasswordDialog(QDialog):
     def __init__(self, password_manager, parent=None):
@@ -414,9 +414,6 @@ class LoginWindow(QWidget):
         button_layout = QHBoxLayout()
         self.login_button = QPushButton('登录')
         self.login_button.clicked.connect(self.verify_password)
-        self.create_button = QPushButton('新建密码库')
-        self.create_button.clicked.connect(self.create_vault)
-        button_layout.addWidget(self.create_button)
         self.exit_button = QPushButton('退出')
         self.exit_button.clicked.connect(QApplication.quit)
 
@@ -437,37 +434,23 @@ class LoginWindow(QWidget):
             QMessageBox.warning(self, '错误', '请输入密码')
             return
 
-        password_bytes = password.encode('utf-8')
+        if not os.path.exists(密码文件):
+            confirmation, ok = QInputDialog.getText(
+                self, '创建密码库', '密码库不存在，请再次输入主密码:', QLineEdit.EchoMode.Password)
+            if not ok:
+                return
+            if confirmation != password:
+                QMessageBox.warning(self, '无法创建', '两次主密码不一致')
+                return
+
         try:
-            password_manager_instance = 密码管理器(默认密码文件, password_bytes)
+            password_manager_instance = 密码管理器(密码文件, password.encode('utf-8'))
             self.password_input.clear()
             self.login_success.emit(password_manager_instance)
             self.close()
         except Exception as e:
             self.password_input.clear()
             QMessageBox.warning(self, '无法打开密码库', str(e))
-
-    def create_vault(self):
-        if any(os.path.exists(p) for p in (默认密码文件, '密码.pkl', '密码哈希.dat')):
-            QMessageBox.warning(self, '无法创建', '已有密码库或旧数据；请登录，旧格式请先运行迁移旧数据.py。')
-            return
-        password = self.password_input.text()
-        if not password:
-            QMessageBox.warning(self, '无法创建', '请先在密码框填写新主密码')
-            return
-        confirmation, ok = QInputDialog.getText(self, '确认主密码', '再次输入主密码:', QLineEdit.EchoMode.Password)
-        if not ok:
-            return
-        if confirmation != password:
-            QMessageBox.warning(self, '无法创建', '两次主密码不一致')
-            return
-        try:
-            manager = 密码管理器(默认密码文件, password.encode('utf-8'), 创建=True)
-            self.password_input.clear()
-            self.login_success.emit(manager)
-            self.close()
-        except Exception as e:
-            QMessageBox.warning(self, '无法创建', str(e))
 
 
 class IdleLock(QObject):

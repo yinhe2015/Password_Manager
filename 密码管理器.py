@@ -1,4 +1,5 @@
 """v2 密码库：scrypt 派生密钥，AES-GCM 认证加密整个 JSON 数据库。"""
+import atexit
 import base64
 import hashlib
 import json
@@ -10,7 +11,7 @@ from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import scrypt
 from Crypto.Random import get_random_bytes
 
-默认密码文件 = '密码.json'
+密码文件 = '密码.json'
 最大文件大小 = 16 * 1024 * 1024 # 16MB
 _KDF = {'name': 'scrypt', 'n': 131072, 'r': 8, 'p': 1}
 
@@ -72,21 +73,66 @@ def _原子写入(路径, 数据, *, 仅新建=False):
             os.unlink(临时路径)
 
 
+def _进程存在(pid):
+    if pid <= 0:
+        return False
+    if os.name == 'nt':
+        # Windows 的 os.kill(pid, 0) 可能终止进程，改用只读进程查询。
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 5:  # ERROR_ACCESS_DENIED：进程存在但无权查询。
+                return True
+            if error == 87:  # ERROR_INVALID_PARAMETER：PID 不存在。
+                return False
+            raise OSError(error, '无法检查锁文件中的进程')
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class 密码管理器:
-    def __init__(self, 密码文件路径: str, 密码字节: bytes, *, 创建=False):
+    def __init__(self, 密码文件路径: str, 密码字节: bytes):
         if not isinstance(密码字节, bytes) or not 密码字节:
             raise ValueError('主密码不能为空')
         self.密码文件路径 = Path(密码文件路径).resolve()
-        if 创建:
-            if self.密码文件路径.exists():
-                raise FileExistsError('密码库已存在，不能覆盖创建')
+        self._密钥 = None
+        self.密码数据 = {}
+        self._锁文件 = None
+        try:
+            self._获取文件锁()
+            self._加载(密码字节)
+        except BaseException:
+            self.锁定()
+            raise
+        atexit.register(self.锁定)
+
+    def _加载(self, 密码字节):
+        if not self.密码文件路径.exists():
             self._初始化密钥(密码字节)
             self.密码数据 = {}
             self._文件指纹 = None
             self._保存(self.密码数据)
         else:
-            if not self.密码文件路径.exists():
-                raise FileNotFoundError('密码库不存在；已有旧数据请先运行迁移旧数据.py')
             原文 = _读取文件(self.密码文件路径)
             try:
                 外层 = json.loads(原文)
@@ -109,9 +155,67 @@ class 密码管理器:
                 self.密码数据 = json.loads(明文)
                 _检查数据(self.密码数据)
             except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as 错误:
-                self.锁定()
                 raise ValueError('主密码错误或密码库已损坏/被篡改') from 错误
             self._文件指纹 = hashlib.sha256(原文).digest()
+
+    def _获取文件锁(self):
+        self._锁路径 = self.密码文件路径.with_suffix('.lock')
+        while True:
+            fd = os.open(self._锁路径, os.O_RDWR | os.O_CREAT, 0o600)
+            文件 = os.fdopen(fd, 'r+b', buffering=0)
+            try:
+                try:
+                    if os.name == 'nt':
+                        import msvcrt
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as 错误:
+                    raise ValueError('密码库正在被其他实例使用，无法打开') from 错误
+                # 等待期间旧持有者可能已删除文件，不能锁住已经脱离路径的旧文件。
+                try:
+                    if not os.path.samestat(os.fstat(fd), self._锁路径.stat()):
+                        文件.close()
+                        continue
+                except FileNotFoundError:
+                    文件.close()
+                    continue
+                内容 = 文件.read(64).strip()
+                try:
+                    pid = int(内容)
+                except ValueError:
+                    pid = 0  # 空文件或损坏的锁也按残留锁处理。
+                if _进程存在(pid):
+                    raise ValueError(f'密码库正在被进程 {pid} 使用，无法打开')
+                self._锁文件 = 文件
+                文件.seek(0)
+                文件.write(str(os.getpid()).encode('ascii'))
+                文件.truncate()
+                os.fsync(fd)
+                return
+            except BaseException:
+                if self._锁文件 is not 文件:
+                    文件.close()
+                raise
+
+    def _释放文件锁(self):
+        文件 = self._锁文件
+        if 文件 is None:
+            return
+        self._锁文件 = None
+        try:
+            try:
+                属于自己 = os.path.samestat(os.fstat(文件.fileno()), self._锁路径.stat())
+            except FileNotFoundError:
+                属于自己 = False
+            if os.name == 'nt':
+                # Windows 必须先关闭句柄才能删除；PID 仍存活，其他实例会拒绝接管。
+                文件.close()
+            if 属于自己:
+                self._锁路径.unlink(missing_ok=True)
+        finally:
+            文件.close()
 
     def _初始化密钥(self, 密码字节):
         盐 = get_random_bytes(32)
@@ -148,6 +252,8 @@ class 密码管理器:
     def 锁定(self):
         self._密钥 = None
         self.密码数据 = {}
+        atexit.unregister(self.锁定)
+        self._释放文件锁()
 
     def 获取数量(self):
         return len(self.密码数据)

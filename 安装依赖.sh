@@ -4,6 +4,7 @@
 python3 --version >/dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo python3 未安装
+    read -p "按任意键退出..." -n
     exit 1
 fi
 
@@ -11,3 +12,4 @@ fi
 python3 -m pip install -r requirements.txt
 
 echo "安装完成"
+read -p "按任意键退出..." -n
