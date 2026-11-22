@@ -59,7 +59,7 @@ def _原子写入(路径, 数据, *, 仅新建=False):
             os.fsync(文件.fileno())
         if 仅新建:
             # 原子发布且绝不覆盖已有文件，包括同时创建的密码库。
-            os.link(临时路径, 路径)
+            os.replace(临时路径, 路径)
         else:
             os.replace(临时路径, 路径)
         if os.name == 'posix':
